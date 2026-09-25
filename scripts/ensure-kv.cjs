@@ -31,8 +31,7 @@ function expectedTitle(toml) {
 function resolveId(title) {
   const list = JSON.parse(wrangler('kv namespace list'));
   const hit =
-    list.find((namespace) => namespace.title === title) ||
-    list.find((namespace) => typeof namespace.title === 'string' && namespace.title.endsWith('attachments-kv'));
+    list.find((namespace) => namespace.title === title);
   if (hit) {
     console.log(`[ensure-kv] reusing existing namespace "${hit.title}" (${hit.id})`);
     return hit.id;

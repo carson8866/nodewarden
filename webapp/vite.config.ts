@@ -252,7 +252,7 @@ function searchIndexPolicyPlugin(isDemo: boolean): Plugin {
         fileName: 'robots.txt',
         source: isDemo
           ? 'User-agent: *\nAllow: /\n'
-          : 'User-agent: *\nDisallow: /\n',
+          : 'User-agent: *\nAllow: /\n',
       });
     },
   };
