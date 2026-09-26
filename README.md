@@ -34,7 +34,7 @@
 
 | Feature | Bitwarden Free | NodeWarden | Notes |
 |---|---|---|---|
-| Web vault | ✅ | ✅ | **Original Web Vault UI** |
+| Web vault | ✅ | ✅ | **Original Web Vault UI** | 
 | TOTP | ❌ | ✅ | Includes `steam://` support |
 | **PWA / offline** | ❌ | ✅ | **Installable, offline** |
 | **Passkey login** | ✅ | ✅ | **passwordless auth** |
