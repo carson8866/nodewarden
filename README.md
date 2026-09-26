@@ -32,7 +32,7 @@
 
 ## Feature comparison with the official Bitwarden server
 
-| Feature | Bitwarden Free | NodeWarden | Notes |
+| Feature | Bitwarden Free | NodeWarden | Notes | 
 |---|---|---|---|
 | Web vault | ✅ | ✅ | **Original Web Vault UI** | 
 | TOTP | ❌ | ✅ | Includes `steam://` support |
