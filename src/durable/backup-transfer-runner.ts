@@ -219,7 +219,15 @@ export class BackupTransferRunner {
 
       while (true) {
         await this.touchJob(token);
-        const settings = await loadBackupSettings(storage, this.env, 'UTC');
+        let settings: Awaited<ReturnType<typeof loadBackupSettings>>;
+        try {
+          settings = await loadBackupSettings(storage, this.env, 'UTC');
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Configured backup settings could not be loaded';
+          failures.push({ destinationId: 'configured-backup-settings', error: message });
+          console.error('[backup] configured backup settings could not be loaded; continuing with the R2 vault snapshot:', message);
+          break;
+        }
         const now = new Date();
         const dueDestinations = settings.destinations.filter((destination) =>
           isBackupDueNow(destination, now, BACKUP_SCHEDULER_WINDOW_MINUTES)
@@ -262,9 +270,11 @@ export class BackupTransferRunner {
         );
         if (r2Backup?.created) completed += 1;
       } catch (error) {
+        const message = error instanceof Error ? error.message : 'Scheduled R2 vault backup failed';
+        console.error('[r2-vault-backup] scheduled snapshot failed:', message);
         failures.push({
           destinationId: 'cloudflare-r2-vault',
-          error: error instanceof Error ? error.message : 'Scheduled R2 vault backup failed',
+          error: message,
         });
       }
 
