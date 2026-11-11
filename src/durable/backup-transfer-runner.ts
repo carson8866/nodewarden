@@ -14,7 +14,8 @@ import {
 } from '../services/backup-uploader';
 import { getBlobObject } from '../services/blob-store';
 import { StorageService } from '../services/storage';
-import { runR2VaultBackupNow, runScheduledR2VaultBackupIfDue } from '../services/r2-vault-backup';
+import { readR2VaultBackup, runR2VaultBackupNow, runScheduledR2VaultBackupIfDue } from '../services/r2-vault-backup';
+import { type BackupRestoreProgressReporter, importRemoteBackupArchiveBytes } from '../services/backup-import';
 import { notifyUserBackupProgress, notifyUserBackupRestoreProgress } from './notifications-hub';
 import {
   executeConfiguredBackup,
@@ -315,6 +316,68 @@ export class BackupTransferRunner {
     }
   }
 
+  private async restoreR2VaultBackup(request: Request): Promise<Response> {
+    let body: {
+      actorUserId?: string;
+      backupId?: string;
+      replaceExisting?: boolean;
+      targetDeviceIdentifier?: string | null;
+    };
+    try {
+      body = await request.json();
+    } catch {
+      return badRequest('R2 backup restore payload is invalid');
+    }
+
+    const actorUserId = String(body.actorUserId || '').trim();
+    const backupId = String(body.backupId || '').trim();
+    if (!actorUserId || !backupId) {
+      return badRequest('R2 backup restore requires an actor and backup identifier');
+    }
+
+    const token = await this.acquireJob(`restore-r2:${actorUserId}`);
+    if (!token) {
+      return badRequest('Another backup or restore run is already in progress', 409);
+    }
+
+    let archiveBytes: Uint8Array | null = null;
+    try {
+      const backup = await readR2VaultBackup(this.env, backupId);
+      archiveBytes = backup.archiveBytes;
+      const targetDeviceIdentifier = String(body.targetDeviceIdentifier || '').trim() || null;
+      const progress: BackupRestoreProgressReporter = async (event) => {
+        await this.touchJob(token);
+        await notifyUserBackupRestoreProgress(
+          this.env,
+          actorUserId,
+          { operation: 'backup-restore', ...event },
+          targetDeviceIdentifier
+        );
+      };
+      const imported = await importRemoteBackupArchiveBytes(
+        archiveBytes,
+        this.env,
+        actorUserId,
+        !!body.replaceExisting,
+        { loadAttachment: backup.loadAttachment },
+        progress,
+        backup.fileName
+      );
+      return new Response(JSON.stringify({ ok: true, result: imported.result }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+        },
+      });
+    } catch (error) {
+      return badRequest(error instanceof Error ? error.message : 'R2 backup restore failed', 500);
+    } finally {
+      archiveBytes?.fill(0);
+      await this.releaseJob(token);
+    }
+  }
+
   private async restoreRemoteBackup(request: Request): Promise<Response> {
     let body: RemoteBackupRestoreRequest;
     try {
@@ -408,6 +471,10 @@ export class BackupTransferRunner {
 
     if (url.pathname === '/internal/run-r2-vault-backup') {
       return this.runR2VaultBackup(request);
+    }
+
+    if (url.pathname === '/internal/restore-r2-vault-backup') {
+      return this.restoreR2VaultBackup(request);
     }
 
     if (url.pathname === '/internal/restore-remote-backup') {

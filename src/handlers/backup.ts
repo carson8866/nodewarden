@@ -47,7 +47,7 @@ import { StorageService } from '../services/storage';
 import { AuthService } from '../services/auth';
 import { auditRequestMetadata, writeAuditEvent } from '../services/audit-events';
 import { getBlobObject } from '../services/blob-store';
-import { listR2VaultBackups, readR2VaultBackup } from '../services/r2-vault-backup';
+import { listR2VaultBackups } from '../services/r2-vault-backup';
 import { notifyUserBackupProgress, notifyUserBackupRestoreProgress } from '../durable/notifications-hub';
 import { getMultipartRequestMaxBytes } from '../utils/direct-upload';
 import { verifyPasskeyUserVerificationToken } from '../utils/user-verification-token';
@@ -588,6 +588,37 @@ async function runR2VaultBackupInDurableObject(env: Env): Promise<unknown | null
   }
   const body = await response.json<{ ok?: boolean; result?: unknown }>();
   if (!body?.ok || !body.result) throw new Error('R2 vault backup response is invalid');
+  return body.result;
+}
+
+async function restoreR2VaultBackupInDurableObject(
+  env: Env,
+  input: {
+    actorUserId: string;
+    backupId: string;
+    replaceExisting: boolean;
+    targetDeviceIdentifier: string | null;
+  }
+): Promise<unknown> {
+  const id = env.BACKUP_TRANSFER_RUNNER.idFromName('configured-backup-runner');
+  const stub = env.BACKUP_TRANSFER_RUNNER.get(id);
+  const response = await stub.fetch('https://backup-transfer/internal/restore-r2-vault-backup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    let message = `R2 vault restore failed: ${response.status}`;
+    try {
+      const body = await response.json<{ error?: string }>();
+      if (body?.error) message = body.error;
+    } catch {
+      // Preserve the status-based message when the DO returns a non-JSON error.
+    }
+    throw new Error(message);
+  }
+  const body = await response.json<{ ok?: boolean; result?: unknown }>();
+  if (!body?.ok || !body.result) throw new Error('R2 vault restore response is invalid');
   return body.result;
 }
 
@@ -1445,46 +1476,29 @@ export async function handleRestoreAdminR2VaultBackup(
   if (verificationError) return verificationError;
 
   const storage = new StorageService(env.DB);
-  let archiveBytes: Uint8Array | null = null;
+  const backupId = String(body.backupId || '').trim();
+  const targetDeviceIdentifier = String(
+    request.headers.get('X-NodeWarden-Acting-Device-Id') || ''
+  ).trim() || null;
   try {
-    const backup = await readR2VaultBackup(env, String(body.backupId || ''));
-    archiveBytes = backup.archiveBytes;
-    const targetDeviceIdentifier = String(
-      request.headers.get('X-NodeWarden-Acting-Device-Id') || ''
-    ).trim() || null;
-    const progress: BackupRestoreProgressReporter = async (event) => {
-      await notifyUserBackupRestoreProgress(
-        env,
-        actorUser.id,
-        { operation: 'backup-restore', ...event },
-        targetDeviceIdentifier
-      );
-    };
-    const imported = await importRemoteBackupArchiveBytes(
-      archiveBytes,
-      env,
-      actorUser.id,
-      !!body.replaceExisting,
-      { loadAttachment: backup.loadAttachment },
-      progress,
-      backup.fileName
-    );
-    await writeAuditLog(storage, actorUser.id, 'admin.backup.r2.restore', 'backup', backup.backupId, {
-      fileName: backup.fileName,
+    const result = await restoreR2VaultBackupInDurableObject(env, {
+      actorUserId: actorUser.id,
+      backupId,
       replaceExisting: !!body.replaceExisting,
-      imported: imported.result.imported,
-      skipped: imported.result.skipped,
+      targetDeviceIdentifier,
+    });
+    await writeAuditLog(storage, actorUser.id, 'admin.backup.r2.restore', 'backup', backupId, {
+      replaceExisting: !!body.replaceExisting,
+      result,
     }, request);
-    return jsonResponse(imported.result);
+    return jsonResponse(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'R2 backup restore failed';
-    await writeAuditLog(storage, actorUser.id, 'admin.backup.r2.restore.failed', 'backup', String(body.backupId || ''), {
+    await writeAuditLog(storage, actorUser.id, 'admin.backup.r2.restore.failed', 'backup', backupId, {
       error: message.slice(0, 200),
       replaceExisting: !!body.replaceExisting,
     }, request).catch(() => undefined);
     return errorResponse(message, toImportStatusCode(message));
-  } finally {
-    archiveBytes?.fill(0);
   }
 }
 
