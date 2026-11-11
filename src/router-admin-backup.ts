@@ -8,6 +8,9 @@ import {
   handleGetAdminBackupSettingsRepairState,
   handleInspectAdminRemoteBackup,
   handleAdminImportBackup,
+  handleListAdminR2VaultBackups,
+  handleRunAdminR2VaultBackup,
+  handleRestoreAdminR2VaultBackup,
   handleListAdminRemoteBackups,
   handleRepairAdminBackupSettings,
   handleRestoreAdminRemoteBackup,
@@ -59,6 +62,18 @@ export async function handleAdminBackupRoute(
 
   if (path === '/api/admin/backup/run' && method === 'POST') {
     return handleRunAdminConfiguredBackup(request, env, actorUser);
+  }
+
+  if (path === '/api/admin/backup/r2' && method === 'GET') {
+    return handleListAdminR2VaultBackups(request, env, actorUser);
+  }
+
+  if (path === '/api/admin/backup/r2/run' && method === 'POST') {
+    return handleRunAdminR2VaultBackup(request, env, actorUser);
+  }
+
+  if (path === '/api/admin/backup/r2/restore' && method === 'POST') {
+    return handleRestoreAdminR2VaultBackup(request, env, actorUser);
   }
 
   if (path === '/api/admin/backup/remote' && method === 'GET') {

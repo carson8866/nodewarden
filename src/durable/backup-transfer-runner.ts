@@ -14,6 +14,7 @@ import {
 } from '../services/backup-uploader';
 import { getBlobObject } from '../services/blob-store';
 import { StorageService } from '../services/storage';
+import { runR2VaultBackupNow, runScheduledR2VaultBackupIfDue } from '../services/r2-vault-backup';
 import { notifyUserBackupProgress, notifyUserBackupRestoreProgress } from './notifications-hub';
 import {
   executeConfiguredBackup,
@@ -250,11 +251,28 @@ export class BackupTransferRunner {
         }
       }
 
+      let r2Backup: Awaited<ReturnType<typeof runScheduledR2VaultBackupIfDue>> = null;
+      try {
+        await this.touchJob(token);
+        r2Backup = await runScheduledR2VaultBackupIfDue(
+          this.env,
+          this.state.storage,
+          () => this.touchJob(token)
+        );
+        if (r2Backup?.created) completed += 1;
+      } catch (error) {
+        failures.push({
+          destinationId: 'cloudflare-r2-vault',
+          error: error instanceof Error ? error.message : 'Scheduled R2 vault backup failed',
+        });
+      }
+
       return new Response(JSON.stringify({
         ok: true,
         completed,
         failed: failures.length,
         failures,
+        r2Backup,
       }), {
         status: 200,
         headers: {
@@ -264,6 +282,34 @@ export class BackupTransferRunner {
       });
     } catch (error) {
       return badRequest(error instanceof Error ? error.message : 'Scheduled backup failed', 500);
+    } finally {
+      await this.releaseJob(token);
+    }
+  }
+
+  private async runR2VaultBackup(request: Request): Promise<Response> {
+    void request;
+    const token = await this.acquireJob('manual-r2-vault-backup');
+    if (!token) {
+      return badRequest('Another backup or restore run is already in progress', 409);
+    }
+
+    try {
+      await this.touchJob(token);
+      const result = await runR2VaultBackupNow(
+        this.env,
+        this.state.storage,
+        () => this.touchJob(token)
+      );
+      return new Response(JSON.stringify({ ok: true, result }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+        },
+      });
+    } catch (error) {
+      return badRequest(error instanceof Error ? error.message : 'R2 vault backup failed', 500);
     } finally {
       await this.releaseJob(token);
     }
@@ -358,6 +404,10 @@ export class BackupTransferRunner {
 
     if (url.pathname === '/internal/run-scheduled-backups') {
       return this.runScheduledBackups();
+    }
+
+    if (url.pathname === '/internal/run-r2-vault-backup') {
+      return this.runR2VaultBackup(request);
     }
 
     if (url.pathname === '/internal/restore-remote-backup') {

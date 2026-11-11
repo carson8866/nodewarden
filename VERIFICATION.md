@@ -1,8 +1,9 @@
-# Verification — 2026-09-25
-Upstream commit: 99d404f7cbf47fa094ea9ed153c16e8f231ded56 (1.8.0).
-Node 24.19.0. npm ci succeeded. Production frontend build succeeded.
-31 upstream tests passed using Node test runner with tsx import (same tests, avoids tsx CLI IPC socket).
-Wrangler recognized local D1, KV, both Durable Objects, assets and local test Secret.
-Runtime startup blocked by this execution environment: uv_interface_addresses system error. No browser registration/login/sync end-to-end verification completed. Do not describe as fully running.
-No Cloudflare deployment performed as of this verification. No Cloudflare credentials used. No real vault data used.
-User-created repository confirmed: carson8866/nodewarden. Deployment preparation only; online validation pending.
+# Verification — 2026-11-11
+
+Upstream release: NodeWarden v1.8.1 (tag commit e92c91e771fac13c54042902d64d015514daa9ad).
+Local fork customizations preserved: carson-vault Worker name, carson-vault-db, ATTACHMENTS_KV binding, idempotent KV namespace pinning, disabled global-domain sync workflow, local-only dev settings, and dependency hardening overrides.
+Added private R2 vault backup bucket binding: VAULT_BACKUPS -> carson-vault-backups (APAC).
+R2 backup format: versioned AES-256-GCM envelope; key derived from JWT_SECRET using HKDF-SHA-256; archive and attachment blobs encrypted separately; 30 most recent snapshots retained.
+Scheduled policy: first scheduled run creates an initial snapshot; subsequent snapshots run daily after 03:00 UTC. Manual run and admin restore endpoints require password re-verification.
+Build and automated tests: pending GitHub Actions verification on the upgrade branch.
+Production deployment: not performed in this verification record. Live Worker remains unchanged until the upgrade branch passes CI.

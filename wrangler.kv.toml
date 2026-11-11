@@ -30,6 +30,10 @@ class_name = "BackupTransferRunner"
 [[kv_namespaces]]
 binding = "ATTACHMENTS_KV"
 
+[[r2_buckets]]
+binding = "VAULT_BACKUPS"
+bucket_name = "carson-vault-backups"
+
 [[migrations]]
 tag = "v1-notifications-hub"
 new_sqlite_classes = [ "NotificationsHub" ]
