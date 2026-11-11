@@ -47,6 +47,7 @@ import { StorageService } from '../services/storage';
 import { AuthService } from '../services/auth';
 import { auditRequestMetadata, writeAuditEvent } from '../services/audit-events';
 import { getBlobObject } from '../services/blob-store';
+import { listR2VaultBackups } from '../services/r2-vault-backup';
 import { notifyUserBackupProgress, notifyUserBackupRestoreProgress } from '../durable/notifications-hub';
 import { getMultipartRequestMaxBytes } from '../utils/direct-upload';
 import { verifyPasskeyUserVerificationToken } from '../utils/user-verification-token';
@@ -566,6 +567,59 @@ async function runConfiguredBackupInDurableObject(
     throw new Error('Backup run response is invalid');
   }
   return body;
+}
+
+async function runR2VaultBackupInDurableObject(env: Env): Promise<unknown | null> {
+  const id = env.BACKUP_TRANSFER_RUNNER.idFromName('configured-backup-runner');
+  const stub = env.BACKUP_TRANSFER_RUNNER.get(id);
+  const response = await stub.fetch('https://backup-transfer/internal/run-r2-vault-backup', {
+    method: 'POST',
+  });
+  if (response.status === 409) return null;
+  if (!response.ok) {
+    let message = `R2 vault backup failed: ${response.status}`;
+    try {
+      const body = await response.json<{ error?: string }>();
+      if (body?.error) message = body.error;
+    } catch {
+      // Preserve the status-based message when the DO returns a non-JSON error.
+    }
+    throw new Error(message);
+  }
+  const body = await response.json<{ ok?: boolean; result?: unknown }>();
+  if (!body?.ok || !body.result) throw new Error('R2 vault backup response is invalid');
+  return body.result;
+}
+
+async function restoreR2VaultBackupInDurableObject(
+  env: Env,
+  input: {
+    actorUserId: string;
+    backupId: string;
+    replaceExisting: boolean;
+    targetDeviceIdentifier: string | null;
+  }
+): Promise<unknown> {
+  const id = env.BACKUP_TRANSFER_RUNNER.idFromName('configured-backup-runner');
+  const stub = env.BACKUP_TRANSFER_RUNNER.get(id);
+  const response = await stub.fetch('https://backup-transfer/internal/restore-r2-vault-backup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    let message = `R2 vault restore failed: ${response.status}`;
+    try {
+      const body = await response.json<{ error?: string }>();
+      if (body?.error) message = body.error;
+    } catch {
+      // Preserve the status-based message when the DO returns a non-JSON error.
+    }
+    throw new Error(message);
+  }
+  const body = await response.json<{ ok?: boolean; result?: unknown }>();
+  if (!body?.ok || !body.result) throw new Error('R2 vault restore response is invalid');
+  return body.result;
 }
 
 async function runScheduledBackupsInDurableObject(env: Env): Promise<void> {
@@ -1335,6 +1389,115 @@ export async function handleAdminImportBackup(request: Request, env: Env, actorU
     return jsonResponse(imported.result);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Backup import failed';
+    return errorResponse(message, toImportStatusCode(message));
+  }
+}
+
+export async function handleListAdminR2VaultBackups(
+  request: Request,
+  env: Env,
+  actorUser: User
+): Promise<Response> {
+  void request;
+  if (!isAdmin(actorUser)) return errorResponse('Forbidden', 403);
+  if (!env.VAULT_BACKUPS) {
+    return jsonResponse({ object: 'r2-vault-backups', enabled: false, backups: [] });
+  }
+  try {
+    const backups = await listR2VaultBackups(env);
+    return jsonResponse({ object: 'r2-vault-backups', enabled: true, backups });
+  } catch (error) {
+    return errorResponse(error instanceof Error ? error.message : 'R2 backup listing failed', 409);
+  }
+}
+
+export async function handleRunAdminR2VaultBackup(
+  request: Request,
+  env: Env,
+  actorUser: User
+): Promise<Response> {
+  if (!isAdmin(actorUser)) return errorResponse('Forbidden', 403);
+  if (!env.VAULT_BACKUPS) return errorResponse('Cloudflare R2 vault backup bucket is not configured', 409);
+
+  let body: { masterPasswordHash?: string };
+  try {
+    body = await request.json<{ masterPasswordHash?: string }>();
+  } catch {
+    return errorResponse('R2 backup run payload is invalid', 400);
+  }
+  const verificationError = await requireBackupUserVerification(
+    actorUser,
+    String(body.masterPasswordHash || ''),
+    env
+  );
+  if (verificationError) return verificationError;
+
+  const storage = new StorageService(env.DB);
+  try {
+    const result = await runR2VaultBackupInDurableObject(env);
+    if (!result) return errorResponse('Another backup or restore run is already in progress', 409);
+    await writeAuditLog(storage, actorUser.id, 'admin.backup.r2.run', 'backup', null, {
+      result,
+    }, request);
+    return jsonResponse({ object: 'r2-vault-backup-run', result });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'R2 vault backup failed';
+    await writeAuditLog(storage, actorUser.id, 'admin.backup.r2.run.failed', 'backup', null, {
+      error: message.slice(0, 200),
+    }, request).catch(() => undefined);
+    return errorResponse(message, 500);
+  }
+}
+
+export async function handleRestoreAdminR2VaultBackup(
+  request: Request,
+  env: Env,
+  actorUser: User
+): Promise<Response> {
+  if (!isAdmin(actorUser)) return errorResponse('Forbidden', 403);
+  if (!env.VAULT_BACKUPS) return errorResponse('Cloudflare R2 vault backup bucket is not configured', 409);
+
+  let body: { backupId?: string; replaceExisting?: boolean; masterPasswordHash?: string };
+  try {
+    body = await request.json<{
+      backupId?: string;
+      replaceExisting?: boolean;
+      masterPasswordHash?: string;
+    }>();
+  } catch {
+    return errorResponse('R2 backup restore payload is invalid', 400);
+  }
+
+  const verificationError = await requireBackupUserVerification(
+    actorUser,
+    String(body.masterPasswordHash || ''),
+    env
+  );
+  if (verificationError) return verificationError;
+
+  const storage = new StorageService(env.DB);
+  const backupId = String(body.backupId || '').trim();
+  const targetDeviceIdentifier = String(
+    request.headers.get('X-NodeWarden-Acting-Device-Id') || ''
+  ).trim() || null;
+  try {
+    const result = await restoreR2VaultBackupInDurableObject(env, {
+      actorUserId: actorUser.id,
+      backupId,
+      replaceExisting: !!body.replaceExisting,
+      targetDeviceIdentifier,
+    });
+    await writeAuditLog(storage, actorUser.id, 'admin.backup.r2.restore', 'backup', backupId, {
+      replaceExisting: !!body.replaceExisting,
+      result,
+    }, request);
+    return jsonResponse(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'R2 backup restore failed';
+    await writeAuditLog(storage, actorUser.id, 'admin.backup.r2.restore.failed', 'backup', backupId, {
+      error: message.slice(0, 200),
+      replaceExisting: !!body.replaceExisting,
+    }, request).catch(() => undefined);
     return errorResponse(message, toImportStatusCode(message));
   }
 }

@@ -12,6 +12,8 @@ export interface Env {
   ATTACHMENTS?: R2Bucket;
   // Optional fallback for attachment/send file storage (no credit card required).
   ATTACHMENTS_KV?: KVNamespace;
+  // Dedicated private R2 bucket for encrypted, automatic vault backups.
+  VAULT_BACKUPS?: R2Bucket;
   JWT_SECRET: string;
   WEBAUTHN_RP_ID?: string;
   WEBAUTHN_RP_NAME?: string;
